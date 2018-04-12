@@ -50,10 +50,11 @@ lastExistingTimestamp = 1522442023 -- Note this is baked in for our purposes
 
 main :: IO ()
 main = do
-   [fname] <- getArgs
+   [statedir, fname] <- getArgs
    bs <- BS.readFile fname
    -- note this turns out we really only need the statedir and blobdir from here, so overkill...
-   serverEnv <- Server.mkServerEnv . (\x -> x {Server.confStaticDir="datafiles"}) =<< Server.defaultServerConfig
+   serverEnv <- Server.mkServerEnv . (\x -> x {Server.confStaticDir="datafiles", Server.confStateDir=statedir}) =<< Server.defaultServerConfig
+
 
    -- note this is the wrong level of raw access. we should go one lower and use acid-state directly. the components don't buy us anything
    userState <- usersStateComponent (Server.serverStateDir serverEnv)
