@@ -10,6 +10,9 @@ module Distribution.Server.Features.PreferredVersions (
     classifyVersions,
 
     PreferredRender(..),
+
+    -- * raw access
+    preferredStateComponent
   ) where
 
 import Distribution.Server.Framework

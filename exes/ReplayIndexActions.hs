@@ -5,7 +5,10 @@ import qualified Distribution.Server.Users.Users as Users
 import Distribution.Server.Users.State
 import Distribution.Server.Features.Core
 import Distribution.Server.Features.Core.State
+import Distribution.Server.Features.PreferredVersions
+import Distribution.Server.Features.PreferredVersions.State
 import qualified Data.ByteString.Lazy as BS
+import qualified Data.ByteString.Lazy.Char8 as BSC
 import System.Environment
 import Distribution.Types.PackageId
 import Codec.Archive.Tar.Entry
@@ -20,12 +23,13 @@ import Data.Time.Clock.POSIX
 import qualified Distribution.Server.Framework.BlobStorage as BlobStorage
 import qualified Distribution.Server.Util.GZip as GZip
 import Data.Acid.Abstract
-import Data.List(isSuffixOf)
+import Data.List(isSuffixOf, sort)
 import Distribution.Server.Packages.Index
 import qualified Distribution.Server.Packages.PackageIndex as PI
-import Data.Maybe(isJust)
+import Data.Maybe(isJust, mapMaybe)
 import qualified Data.Map as M
 import System.Process
+import Data.Char
 
 import System.FilePath ((</>),(<.>))
 import Distribution.Text(display)
@@ -39,36 +43,63 @@ import Distribution.Text ( simpleParse )
 
 import Data.ByteString.Lazy (ByteString)
 import System.FilePath.Posix ( splitDirectories, normalise )
+import Distribution.Version(VersionRange(..))
 
 lastExistingTimestamp :: EpochTime
-lastExistingTimestamp = 1523451453 --TODO pick right stamp
+lastExistingTimestamp = 1522442023 -- Note this is baked in for our purposes
 
 main :: IO ()
 main = do
    [fname] <- getArgs
    bs <- BS.readFile fname
-   --nb turns out we really only need the statedir and blobdir from here, so overkill...
+   -- note this turns out we really only need the statedir and blobdir from here, so overkill...
    serverEnv <- Server.mkServerEnv . (\x -> x {Server.confStaticDir="datafiles"}) =<< Server.defaultServerConfig
 
+   -- note this is the wrong level of raw access. we should go one lower and use acid-state directly. the components don't buy us anything
    userState <- usersStateComponent (Server.serverStateDir serverEnv)
    coreState <- packagesStateComponent Verbosity.normal False (Server.serverStateDir serverEnv)
+   prefState <- preferredStateComponent False (Server.serverStateDir serverEnv)
+
 
    let Right allEntries = readIndex (,) (const True) bs -- if we don't parse, we die
        -- entries are reverse chron, but we want to process them oldest to newest
-       -- entries = reverse $ take 1000 allEntries
        entries = reverse $ takeWhile (\x -> either entryTime (entryTime . snd) x > lastExistingTimestamp) allEntries
 
-   mapM_ (processEntry userState coreState (Server.serverBlobStore serverEnv)) entries
+   mapM_ (processEntry userState coreState prefState (Server.serverBlobStore serverEnv)) entries
 
--- Note this doesn't handle preferred entries yet TODO
+-- pure but was in IO for debugging
+inferPrefsDeprs (NormalFile bs _) = do
+  let xs = dropWhile (not . isSpace) $ BSC.unpack bs
+      Just parsed = (simpleParse xs :: Maybe VersionRange)
+      -- huge heuristic hack
+      collectVersions (UnionVersionRanges va vb) = collectVersions va ++ collectVersions vb
+      collectVersions (IntersectVersionRanges va vb) = collectVersions va ++ collectVersions vb
+      collectVersions v = [v]
+      cvp = collectVersions parsed
+      laterVersions   = mapMaybe (\x -> case x of LaterVersion   v -> Just v; _ -> Nothing) cvp
+      earlierVersions = mapMaybe (\x -> case x of EarlierVersion v -> Just v; _ -> Nothing) cvp
+      isDeprication = length (laterVersions ++ earlierVersions) == length cvp && sort laterVersions == sort earlierVersions
+  if isDeprication
+     then return ([],laterVersions,bs)
+     else return ([parsed],[],bs)
 
 processEntry :: StateComponent AcidState Users.Users
                -> StateComponent AcidState PackagesState
+               -> StateComponent AcidState PreferredVersions
                -> BlobStorage.BlobStorage
                -> Either Entry (PackageIdentifier, Entry)
                -> IO ()
-processEntry userState coreState blobstore (Left entry) = print entry -- todo
-processEntry userState coreState blobstore (Right (pkgid,entry)) = do
+processEntry userState coreState prefState blobstore (Left entry) =
+   case splitDirectories (normalise (entryPath entry)) of
+       [pkgname, "preferred-versions"] -> do
+                    print $ "preferred for: " ++ pkgname
+                    (prefs,deprs,bs) <- inferPrefsDeprs (entryContent entry)
+                    updateState prefState (SetPreferredInfo (mkPackageName pkgname) prefs deprs)
+                    let ename = pkgname </> "preferred-versions"
+                    updateState coreState $ AddOtherIndexEntry $ ExtraEntry ename bs (posixSecondsToUTCTime $ realToFrac $ entryTime entry)
+       _ -> print $ "couldn't parse weird entry: " ++ show entry
+
+processEntry userState coreState prefState blobstore (Right (pkgid,entry)) = do
   print pkgid
 --  print $ entry {entryContent=Directory}
   let
@@ -126,11 +157,12 @@ processEntry userState coreState blobstore (Right (pkgid,entry)) = do
                                         ultime = posixSecondsToUTCTime $ realToFrac $ entryTime entry
                                   in not . null $ filter (>= ultime) timestamps
   let isPackageJson = "package.json" `isSuffixOf` fromTarPathToPosixPath (entryTarPath entry)
+
   case (isPackageJson, replayAlreadyDone, packageVersionAlreadyExists) of
     (True,_,_) -> print "ignoring packagejson"
     (_,True,_) -> print "replay already done"
-    (_,_,True) -> print "isrevision" -- >> doPackageRevision
-    _          -> print "isupload" -- >> doPackageUpload
+    (_,_,True) -> print "isrevision" >> doPackageRevision
+    _          -> print "isupload" >> doPackageUpload
   return ()
 
 createPackageTarball :: BlobStorage.BlobStorage -> PackageIdentifier -> IO PkgTarball
