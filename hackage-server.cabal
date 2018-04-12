@@ -491,12 +491,6 @@ executable hackage-replayindex
                , vector
                , zlib
 
-  -- Runtime dependency only;
-  -- TODO: we have no proper support for this kind of dependencies in cabal
-  -- `build-tool-depends` specifies compile/test-time deps, but not run-time deps
-  --
-  -- build-tool-depends: hscolour:hscolour >= 1.8
-
   default-language: Haskell2010
   -- the -threaded option is necessary for correct handling
   -- of CTRL-C (not sure why :( )

@@ -27,7 +27,11 @@ import Distribution.Server.Packages.Index
 import qualified Distribution.Server.Packages.PackageIndex as PI
 import Data.Maybe(isJust)
 import qualified Data.Map as M
+import System.Process
 
+import System.FilePath ((</>),(<.>))
+import Distribution.Text(display)
+import System.Directory(getHomeDirectory)
 
 lastExistingTimestamp :: EpochTime
 lastExistingTimestamp = 1523451453 --TODO pick right stamp
@@ -118,22 +122,27 @@ processEntry userState coreState blobstore x = do
     (True,_,_) -> print "ignoring packagejson"
     (_,True,_) -> print "replay already done"
     (_,_,True) -> print "isrevision" -- >> doPackageRevision
-    _          -> print "isupload" -- >> doPackageUpload
+    _          -> print "isupload" >> doPackageUpload
   return ()
 
-createPackageTarball :: BlobStorage.BlobStorage -> p -> IO PkgTarball
-createPackageTarball store pinfo = do
-     fileContent <- undefined -- TODOfetchPackage pinfo
+createPackageTarball :: BlobStorage.BlobStorage -> PackageIdentifier -> IO PkgTarball
+createPackageTarball store pkgid = do
+     --  this is arguably dirty and we should use hackage-security directly, maybe?
+     let pname = display (pkgName pkgid)
+     let pversion = display (pkgVersion pkgid)
+     let fname = display pkgid <.> "tar.gz"
+     homeDir <- getHomeDirectory
+     ph <- runProcess "cabal" ["fetch", "--no-dependencies", display pkgid] Nothing Nothing Nothing Nothing Nothing
+     waitForProcess ph
+     fileContent <- BS.readFile $ homeDir </> ".cabal/packages/hackage.haskell.org" </> pname </> pversion </> fname
      blobId <- BlobStorage.add store fileContent
      infoGz <- blobInfoFromId store blobId
-     let filename = undefined
-     let decompressedContent = GZip.decompressNamed filename fileContent
+     let decompressedContent = GZip.decompressNamed fname fileContent
      blobIdDecompressed <- BlobStorage.add store decompressedContent
      return  $ PkgTarball {
                               pkgTarballGz   = infoGz
                             , pkgTarballNoGz = blobIdDecompressed
                           }
-
  {-
 -- things can be preferred, json, or package
 -- if json, ignore (we'll add with package)
