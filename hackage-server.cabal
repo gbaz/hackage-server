@@ -487,6 +487,8 @@ executable hackage-replayindex
                , process
                , tar
                , time
+               , acid-state
+               , vector
                , zlib
 
   -- Runtime dependency only;
