@@ -12,7 +12,7 @@ import Control.Monad (join)
 import qualified Distribution.Server as Server
 import qualified Distribution.Verbosity as Verbosity
 import Distribution.Server.Features.Core.State
-import Distribution.Server.Framework.Feature (updateState, StateComponent(..))
+import Distribution.Server.Framework.Feature (updateState, queryState, StateComponent(..))
 import Distribution.Server.Packages.Types
 import qualified Data.Vector as V
 import Distribution.Server.Users.Users(lookupUserId)
@@ -21,6 +21,11 @@ import Data.Time.Clock.POSIX
 import qualified Distribution.Server.Framework.BlobStorage as BlobStorage
 import qualified Distribution.Server.Util.GZip as GZip
 import Data.Acid.Abstract
+import Data.List(isSuffixOf)
+import Distribution.Server.Packages.Index
+import qualified Distribution.Server.Packages.PackageIndex as PI
+import Data.Maybe(isJust)
+
 
 lastExistingTimestamp :: EpochTime
 lastExistingTimestamp= 1523451453 --TODO pick right stamp
@@ -37,28 +42,27 @@ main = do
 
    let Right allEntries = Index.read (,) (const True) bs -- if we don't parse, we die
        -- entries are reverse chron, but we want to process them oldest to newest
-       entries = reverse $ takeWhile (\x -> entryTime (snd x) > lastExistingTimestamp) allEntries
+       entries = reverse $ take 1000 allEntries
+       -- entries = reverse $ takeWhile (\x -> entryTime (snd x) > lastExistingTimestamp) allEntries
 
-   mapM_ (processEntry entries users coreState (Server.serverBlobStore serverEnv)) entries
+   mapM_ (processEntry users coreState (Server.serverBlobStore serverEnv)) entries
 
--- Note this doesn't handle preferred entries yet
+-- Note this doesn't handle preferred entries yet TODO
 
-processEntry :: [(PackageIdentifier,Entry)]
-                   -> UserFeature
-                   -> Distribution.Server.Framework.Feature.StateComponent
+processEntry :: UserFeature
+               -> Distribution.Server.Framework.Feature.StateComponent
                       AcidState PackagesState
-                   -> BlobStorage.BlobStorage
-                   -> (PackageIdentifier, Entry)
-                   -> IO ()
-processEntry entries users coreState blobstore x = do
+               -> BlobStorage.BlobStorage
+               -> (PackageIdentifier, Entry)
+               -> IO ()
+processEntry users coreState blobstore x = do
   print (fst x)
-  print $  (snd x) {entryContent=Directory}
+--  print $  (snd x) {entryContent=Directory}
   let
      doPackageUpload :: IO ()
      doPackageUpload = do
        (uid,userInfo) <- userInsertOrLookup
-       pkgTarball <- createPackageTarball blobstore (fst x) --fetch packagetarball bytestring
-       let packagejson = undefined -- find json file in entries
+       pkgTarball <- createPackageTarball blobstore (fst x)
        let ultime = posixSecondsToUTCTime $ realToFrac $ entryTime (snd x)
            ulinfo = (ultime, uid)
        NormalFile bs _ <- return $ entryContent (snd x)
@@ -68,13 +72,23 @@ processEntry entries users coreState blobstore x = do
             (V.fromList [(CabalFileText bs,ulinfo)]) -- list of (CabalFileText,UploadInfo)
             (V.fromList [(pkgTarball,ulinfo)]) -- list of (PkgTarball, UploadInfo)
           )
-          (undefined,uid) -- (utctime,userid)
+          (ultime,uid)
           (userName userInfo)
-          [] --TODO, json entry
+          [MetadataEntry (fst x) 0 ultime] -- this gives the package.json
        return ()
 
      doPackageRevision :: IO ()
-     doPackageRevision = return () --TODO
+     doPackageRevision = do
+       (uid,userInfo) <- userInsertOrLookup
+       let ultime = posixSecondsToUTCTime $ realToFrac $ entryTime (snd x)
+           ulinfo = (ultime, uid)
+       NormalFile bs _ <- return $ entryContent (snd x)
+       updateState coreState $ AddPackageRevision2
+          (fst x)
+          (CabalFileText bs)
+          ulinfo
+          (userName userInfo)
+       return ()
 
      userInsertOrLookup :: IO (UserId,UserInfo)
      userInsertOrLookup = do
@@ -85,14 +99,16 @@ processEntry entries users coreState blobstore x = do
         case lookupUserId uid usersdb of
           Just userInfo -> return (uid,userInfo)
           Nothing -> return undefined -- todo insert user
-  packageVersionAlreadyExists <- return undefined --todo
-  let isPackageJson = False --todo
+
+  pkgIndex <- fmap packageIndex . queryState coreState $ GetPackagesState
+  let packageVersionAlreadyExists = isJust $ PI.lookupPackageId pkgIndex (fst x)
+  let isPackageJson = "package.json" `isSuffixOf` fromTarPathToPosixPath (entryTarPath (snd x))
   if isPackageJson
-    then return ()
+    then print "ignoring packagejson" --return () -- nothing to be done
     else
       if packageVersionAlreadyExists
-        then doPackageRevision
-        else doPackageUpload
+        then print "isrevision"   -- >> doPackageRevision
+        else print "isupload" -- >> doPackageUpload
   return ()
 
 createPackageTarball :: BlobStorage.BlobStorage -> p -> IO PkgTarball
