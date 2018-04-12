@@ -7,6 +7,9 @@ module Distribution.Server.Features.Users (
     UserResource(..),
 
     GroupResource(..),
+
+    -- * raw access
+    usersStateComponent
   ) where
 
 import Distribution.Server.Framework

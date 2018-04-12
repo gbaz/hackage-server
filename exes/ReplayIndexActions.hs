@@ -1,8 +1,10 @@
 module Main where
 
 import Distribution.Server.Features.Users
+import qualified Distribution.Server.Users.Users as Users
+import Distribution.Server.Users.State
 import Distribution.Server.Features.Core
--- import Distribution.Server.Features.Upload
+import Distribution.Server.Features.Core.State
 import qualified Distribution.Client.Index as Index
 import qualified Data.ByteString.Lazy as BS
 import System.Environment
@@ -11,7 +13,6 @@ import Codec.Archive.Tar.Entry
 import Control.Monad (join)
 import qualified Distribution.Server as Server
 import qualified Distribution.Verbosity as Verbosity
-import Distribution.Server.Features.Core.State
 import Distribution.Server.Framework.Feature (updateState, queryState, StateComponent(..))
 import Distribution.Server.Packages.Types
 import qualified Data.Vector as V
@@ -25,37 +26,37 @@ import Data.List(isSuffixOf)
 import Distribution.Server.Packages.Index
 import qualified Distribution.Server.Packages.PackageIndex as PI
 import Data.Maybe(isJust)
+import qualified Data.Map as M
 
 
 lastExistingTimestamp :: EpochTime
-lastExistingTimestamp= 1523451453 --TODO pick right stamp
+lastExistingTimestamp = 1523451453 --TODO pick right stamp
 
 main :: IO ()
 main = do
    [fname] <- getArgs
    bs <- BS.readFile fname
+   --nb turns out we really only need the statedir and blobdir from here, so overkill...
    serverEnv <- Server.mkServerEnv . (\x -> x {Server.confStaticDir="datafiles"}) =<< Server.defaultServerConfig
 
-   users <- join $ initUserFeature serverEnv
---    core <- ($ userFeature) =<<  initCoreFeature serverEnv
+   userState <- usersStateComponent (Server.serverStateDir serverEnv)
    coreState <- packagesStateComponent Verbosity.normal False (Server.serverStateDir serverEnv)
 
    let Right allEntries = Index.read (,) (const True) bs -- if we don't parse, we die
        -- entries are reverse chron, but we want to process them oldest to newest
        entries = reverse $ take 1000 allEntries
-       -- entries = reverse $ takeWhile (\x -> entryTime (snd x) > lastExistingTimestamp) allEntries
+       -- entries = reverse $ takeWhile (\x -> entryTime (snd x) > lastExistingTimestamp) allEntries -- TODO reenable
 
-   mapM_ (processEntry users coreState (Server.serverBlobStore serverEnv)) entries
+   mapM_ (processEntry userState coreState (Server.serverBlobStore serverEnv)) entries
 
 -- Note this doesn't handle preferred entries yet TODO
 
-processEntry :: UserFeature
-               -> Distribution.Server.Framework.Feature.StateComponent
-                      AcidState PackagesState
+processEntry :: StateComponent AcidState Users.Users
+               -> StateComponent AcidState PackagesState
                -> BlobStorage.BlobStorage
                -> (PackageIdentifier, Entry)
                -> IO ()
-processEntry users coreState blobstore x = do
+processEntry userState coreState blobstore x = do
   print (fst x)
 --  print $  (snd x) {entryContent=Directory}
   let
@@ -95,10 +96,14 @@ processEntry users coreState blobstore x = do
         let uname = ownerName $ entryOwnership (snd x)
             uid   = UserId $ ownerId $ entryOwnership (snd x)
 
-        usersdb <- queryGetUserDb users
+        usersdb <- queryState userState $ GetUserDb
         case lookupUserId uid usersdb of
           Just userInfo -> return (uid,userInfo)
-          Nothing -> return undefined -- todo insert user
+          Nothing ->
+               let uinfo = UserInfo (UserName uname) (AccountEnabled (UserAuth (PasswdHash "BADHASH"))) M.empty
+               in case (Users.insertUserAccount uid uinfo) usersdb of
+                          Left err -> print ("user insert error: " ++ show (uid, uinfo)) >> return (uid, uinfo)
+                          Right newdb -> updateState userState (ReplaceUserDb newdb) >> return (uid, uinfo)
 
   pkgIndex <- fmap packageIndex . queryState coreState $ GetPackagesState
   let packageVersionAlreadyExists = isJust $ PI.lookupPackageId pkgIndex (fst x)
