@@ -44,8 +44,8 @@ main = do
 
    let Right allEntries = Index.read (,) (const True) bs -- if we don't parse, we die
        -- entries are reverse chron, but we want to process them oldest to newest
-       entries = reverse $ take 1000 allEntries
-       -- entries = reverse $ takeWhile (\x -> entryTime (snd x) > lastExistingTimestamp) allEntries -- TODO reenable
+       -- entries = reverse $ take 1000 allEntries
+       entries = reverse $ takeWhile (\x -> entryTime (snd x) > lastExistingTimestamp) allEntries
 
    mapM_ (processEntry userState coreState (Server.serverBlobStore serverEnv)) entries
 
@@ -106,14 +106,19 @@ processEntry userState coreState blobstore x = do
                           Right newdb -> updateState userState (ReplaceUserDb newdb) >> return (uid, uinfo)
 
   pkgIndex <- fmap packageIndex . queryState coreState $ GetPackagesState
-  let packageVersionAlreadyExists = isJust $ PI.lookupPackageId pkgIndex (fst x)
+  let existingPkg = PI.lookupPackageId pkgIndex (fst x)
+      packageVersionAlreadyExists = isJust $ existingPkg
+      replayAlreadyDone = case existingPkg of
+                        Nothing -> False
+                        Just pkg -> let timestamps = map fst $ map snd (V.toList (pkgMetadataRevisions pkg)) ++ map snd (V.toList (pkgTarballRevisions pkg))
+                                        ultime = posixSecondsToUTCTime $ realToFrac $ entryTime (snd x)
+                                  in not . null $ filter (>= ultime) timestamps
   let isPackageJson = "package.json" `isSuffixOf` fromTarPathToPosixPath (entryTarPath (snd x))
-  if isPackageJson
-    then print "ignoring packagejson" --return () -- nothing to be done
-    else
-      if packageVersionAlreadyExists
-        then print "isrevision"   -- >> doPackageRevision
-        else print "isupload" -- >> doPackageUpload
+  case (isPackageJson, replayAlreadyDone, packageVersionAlreadyExists) of
+    (True,_,_) -> print "ignoring packagejson"
+    (_,True,_) -> print "replay already done"
+    (_,_,True) -> print "isrevision" -- >> doPackageRevision
+    _          -> print "isupload" -- >> doPackageUpload
   return ()
 
 createPackageTarball :: BlobStorage.BlobStorage -> p -> IO PkgTarball
