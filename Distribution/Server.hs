@@ -3,6 +3,7 @@ module Distribution.Server (
     -- * Server control
     Server(..),
     ServerEnv(..),
+    mkServerEnv,
     initialise,
     run,
     shutdown,

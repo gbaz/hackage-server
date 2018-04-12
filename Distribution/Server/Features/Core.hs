@@ -18,6 +18,9 @@ module Distribution.Server.Features.Core (
     -- * Misc other utils
     packageExists,
     packageIdExists,
+
+    -- * raw access to the state
+    packagesStateComponent
   ) where
 
 -- stdlib

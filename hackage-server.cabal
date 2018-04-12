@@ -464,6 +464,31 @@ executable hackage-build
                , time
                , zlib
 
+executable hackage-replayindex
+  hs-source-dirs: exes
+  main-is: ReplayIndexActions.hs
+
+  other-modules: Paths_hackage_server
+  autogen-modules: Paths_hackage_server
+
+  build-depends: lib-server
+                 -- version constraints inherited from lib-server
+               , Cabal
+               , HTTP
+               , aeson
+               , base
+               , bytestring
+               , containers
+               , directory
+               , filepath
+               , mtl
+               , network-uri
+               , pretty
+               , process
+               , tar
+               , time
+               , zlib
+
   -- Runtime dependency only;
   -- TODO: we have no proper support for this kind of dependencies in cabal
   -- `build-tool-depends` specifies compile/test-time deps, but not run-time deps
