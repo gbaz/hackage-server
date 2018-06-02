@@ -65,8 +65,10 @@ main = do
    let Right allEntries = readIndex (,) (const True) bs -- if we don't parse, we die
        -- entries are reverse chron, but we want to process them oldest to newest
        entries = reverse $ takeWhile (\x -> either entryTime (entryTime . snd) x > lastExistingTimestamp) allEntries
-
    mapM_ (processEntry userState coreState prefState (Server.serverBlobStore serverEnv)) entries
+
+
+-- TODO ensure uploaders get put in maintainers group.
 
 -- pure but was in IO for debugging
 inferPrefsDeprs (NormalFile bs _) = do
@@ -84,6 +86,7 @@ inferPrefsDeprs (NormalFile bs _) = do
      then return ([],laterVersions,bs)
      else return ([parsed],[],bs)
 
+-- TODO check preferred entry doesn't already exist to prevent double insert.
 processEntry :: StateComponent AcidState Users.Users
                -> StateComponent AcidState PackagesState
                -> StateComponent AcidState PreferredVersions
